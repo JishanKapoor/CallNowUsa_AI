@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-image: url('https://images.unsplash.com/photo-1620121692029-d088224ddc74?q=80&w=1032&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D');
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+        }
+    #chat-container {
+        max-height: 80vh;
+        overflow-y: scroll; /* Use scroll instead of auto to always allow scrolling */
+        scroll-behavior: smooth;
+        background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 1rem;
+        }
+
+    /* Hide scrollbar but keep scrolling enabled */
+    #chat-container::-webkit-scrollbar {
+        width: 0px; /* Hide the scrollbar */
+    }
+
+    #chat-container::-webkit-scrollbar-thumb {
+        background: transparent; /* Invisible scrollbar thumb */
+    }
+        .message {
+            margin: 0.75rem;
+            padding: 1rem;
+            border-radius: 0.75rem;
+            max-width: 80%;
+            font-size: 1rem;
+            line-height: 1.5;
+            white-space: pre-wrap; /* Preserve line breaks and whitespace */
+        }
+        .user-message {
+            background-color: #2563eb;
+            color: white;
+            margin-left: auto;
+        }
+        .assistant-message {
+            background-color: rgba(255, 255, 255, 0.9);
+            color: black;
+        }
+        #loading-spinner {
+            display: none;
+            width: 1.5rem;
+            height: 1.5rem;
+            border: 3px solid #ccc;
+            border-top: 3px solid #2563eb;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0.5rem auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        #command-input {
+            background: rgba(255, 255, 255, 0.95);
+        }
+        #send-button {
+            background-color: #dc2626;
+        }
+        #send-button:hover {
+            background-color: #b91c1c;
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen">
+    <div class="flex-1 flex flex-col max-w-4xl mx-auto w-full p-6">
+        <div id="chat-container" class="flex-1 rounded-xl shadow-xl p-6 mb-4">
+            <div id="chat-messages"></div>
+            <div id="loading-spinner"></div>
+        </div>
+        <div class="flex">
+            <input
+                type="text"
+                id="command-input"
+                placeholder="Engage with AI..."
+                class="flex-1 p-3 rounded-l-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+            >
+            <button
+                id="send-button"
+                class="text-white p-3 rounded-r-lg hover:bg-blue-700 text-sm font-medium"
+            >
+                Send
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const chatMessages = document.getElementById('chat-messages');
+        const commandInput = document.getElementById('command-input');
+        const sendButton = document.getElementById('send-button');
+        const chatContainer = document.getElementById('chat-container');
+        const loadingSpinner = document.getElementById('loading-spinner');
+
+        function addMessage(content, isUser = false) {
+            if (!content) return;
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user-message' : 'assistant-message'}`;
+            messageDiv.textContent = content; // Use textContent with white-space: pre-wrap to preserve line breaks
+            chatMessages.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        async function sendCommand() {
+            const command = commandInput.value.trim();
+            if (!command) return;
+
+            addMessage(command, true);
+            commandInput.value = '';
+            sendButton.disabled = true;
+            loadingSpinner.style.display = 'block';
+
+            try {
+                const response = await Promise.race([
+                    fetch('/api/command', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ command })
+                    }),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout')), 30000000))
+                ]);
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    data.messages.forEach(msg => addMessage(msg));
+                } else {
+                    addMessage(`Error: ${data.message}`);
+                }
+            } catch (error) {
+                addMessage(`Error: ${error.message}`);
+            } finally {
+                sendButton.disabled = false;
+                loadingSpinner.style.display = 'none';
+            }
+        }
+
+        sendButton.addEventListener('click', sendCommand);
+        commandInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !sendButton.disabled) sendCommand();
+        });
+
+        addMessage(`
+🌑 Welcome to Your AI SMS Assistant!
+
+Hey there! I'm your AI sidekick, here to supercharge your SMS game. I can:
+
+Send SMS to anyone, anytime (e.g., "send sms to Alice saying Hi!")
+Create, update, or delete contacts (e.g., "add Alice, number is +14372392448")
+Show messages or meetings (e.g., "do I have any meetings today?")
+Forward messages automatically (e.g., "forward sms from Bob to Alice")
+Schedule SMS for later (e.g., "schedule sms to Mike tomorrow saying Yo!")
+List contacts or active forwarding rules (e.g., "list contacts" or "show active conditions")
+        `);
+    </script>
+</body>
+</html>
