@@ -17,16 +17,16 @@ from dataclasses import dataclass, field
 import pytz
 from dateutil.parser import parse as parse_datetime
 from openai import AzureOpenAI
-from callnowusa import Client as CallNowUSAClient
+from callnowusa import Client
 from dotenv import load_dotenv
 load_dotenv()
 
 # The rest of your imports and code
 import os
 # Environment variables and defaults
-CALLNOWUSA_NUMBER: "default"
-ACCOUNT_SID: str = "SID_d5cf1823-5664-42cc-b6b6-fb10bcdaec56"
-AUTH_TOKEN: str = "AUTH_aaa784bc-a599-499f-946b-ba7115c59726"
+account_sid = 'SID_d5cf1823-5664-42cc-b6b6-fb10bcdaec56'
+auth_token = 'AUTH_aaa784bc-a599-499f-946b-ba7115c59726'
+CALLNOWUSA_NUMBER = 'default'
 AZURE_API_KEY: str = os.getenv("AZURE_API_KEY")
 AZURE_ENDPOINT: str = os.getenv("AZURE_ENDPOINT")
 
@@ -422,11 +422,7 @@ class SQLiteStore:
                     logger.debug("Failed to parse message: %s", e)
             return messages
 
-callnow_client = CallNowUSAClient(
-    account_sid=ACCOUNT_SID,
-    auth_token=AUTH_TOKEN,
-    phone_number=CALLNOWUSA_NUMBER,
-)
+callnow_client = Client(account_sid, auth_token, CALLNOWUSA_NUMBER)
 
 openai_client = AzureOpenAI(
     api_key=AZURE_API_KEY,
