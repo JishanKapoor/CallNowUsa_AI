@@ -24,9 +24,9 @@ load_dotenv()
 # The rest of your imports and code
 import os
 # Environment variables and defaults
-CALLNOWUSA_NUMBER: str = os.getenv("CALLNOWUSA_NUMBER")
-ACCOUNT_SID: str = os.getenv("CALLNOWUSA_SID")
-AUTH_TOKEN: str = os.getenv("CALLNOWUSA_TOKEN")
+CALLNOWUSA_NUMBER: "default"
+ACCOUNT_SID: str = "SID_d5cf1823-5664-42cc-b6b6-fb10bcdaec56"
+AUTH_TOKEN: str = "AUTH_aaa784bc-a599-499f-946b-ba7115c59726"
 AZURE_API_KEY: str = os.getenv("AZURE_API_KEY")
 AZURE_ENDPOINT: str = os.getenv("AZURE_ENDPOINT")
 
