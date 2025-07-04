@@ -2539,32 +2539,85 @@ class SMSAssistant:
         return [m for m in self._fetch_messages() if m.label == label]
 
     def _show_meetings(self, date_filter: Optional[str] = None):
-        """Show messages related to meetings."""
-        print(f"Searching for meetings{' ' + date_filter if date_filter else ''}...")
+        """Check meetings for a given date using GPT-4o first, fallback to local DB."""
+        print(f"Checking meetings{' for ' + date_filter if date_filter else ''}...")
+
+        today = datetime.now(TZ).date()
+
+        # Fetch recent meeting messages (last 7 days) for GPT context
         with self.store._lock, self.store.conn:
-            query = "SELECT sender, message, timestamp, direction, label FROM message_log WHERE label IN (?, ?)"
-            params = ["meeting", "high priority"]
-            if date_filter:
-                today = datetime.now(TZ).date()
-                if date_filter == "today":
-                    query += " AND date(timestamp) = ?"
-                    params.append(today.strftime("%Y-%m-%d"))
-                elif date_filter == "tomorrow":
-                    tomorrow = (today + timedelta(days=1)).strftime("%Y-%m-%d")
-                    query += " AND date(timestamp) = ?"
-                    params.append(tomorrow)
-                elif date_filter == "next week":
-                    next_monday = today + timedelta(days=(7 - today.weekday()))
-                    next_sunday = next_monday + timedelta(days=6)
-                    query += " AND date(timestamp) BETWEEN ? AND ?"
-                    params.extend([next_monday.strftime("%Y-%m-%d"), next_sunday.strftime("%Y-%m-%d")])
-                elif date_filter == "upcoming":
-                    query += " AND date(timestamp) > ?"
-                    params.append(today.strftime("%Y-%m-%d"))
-            query += " ORDER BY timestamp DESC"
+            cur = self.store.conn.execute(
+                "SELECT message, timestamp FROM message_log WHERE label IN (?, ?) AND date(timestamp) >= ? ORDER BY timestamp DESC",
+                ["meeting", "high priority", (today - timedelta(days=7)).strftime("%Y-%m-%d")]
+            )
+            raw_msgs = [f"{row['timestamp']}: {row['message']}" for row in cur.fetchall()]
+
+        raw_msgs_text = "\n".join(raw_msgs) if raw_msgs else "No recent meeting messages available."
+
+        # Prepare GPT prompt
+        prompt = f"""
+    You are an assistant helping to find meetings from user messages.
+    User asked: "Do I have any meetings {date_filter}?"
+    Here are recent meeting-related messages:
+    {raw_msgs_text}
+
+    Based on above messages, answer only yes or no and if yes, give details of meeting(s) on {date_filter}.
+    """
+
+        # Call GPT-4o
+        try:
+            response = openai_client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+                max_tokens=300,
+            )
+            answer = response.choices[0].message.content.strip()
+            # print("GPT-4o says:", answer)
+
+            # If GPT gives a meaningful "yes" answer, do not query DB further
+            if "yes" in answer.lower():
+                print(answer)
+                return  # stop here, GPT answered sufficiently
+
+        except Exception as e:
+            print(f"Failed to get response from GPT-4o: {e}")
+            print("Falling back to local DB search...")
+
+        # Fallback local DB search if GPT fails or no meetings
+        print(f"Checking local database for meetings{' for ' + date_filter if date_filter else ''}...")
+
+        query = "SELECT sender, message, timestamp, direction, label FROM message_log WHERE label IN (?, ?)"
+        params = ["meeting", "high priority"]
+
+        if date_filter:
+            if date_filter == "today":
+                query += " AND date(timestamp) = ?"
+                params.append(today.strftime("%Y-%m-%d"))
+            elif date_filter == "tomorrow":
+                tomorrow = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+                query += " AND date(timestamp) = ?"
+                params.append(tomorrow)
+            elif date_filter == "next week":
+                next_monday = today + timedelta(days=(7 - today.weekday()))
+                next_sunday = next_monday + timedelta(days=6)
+                query += " AND date(timestamp) BETWEEN ? AND ?"
+                params.extend([next_monday.strftime("%Y-%m-%d"), next_sunday.strftime("%Y-%m-%d")])
+            elif date_filter == "upcoming":
+                now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+                query += " AND timestamp > ?"
+                params.append(now)
+
+        query += " ORDER BY timestamp DESC"
+
+        messages = []
+        with self.store._lock, self.store.conn:
             cur = self.store.conn.execute(query, params)
-            messages = []
-            for row in cur.fetchall():
+            rows = cur.fetchall()
+            for row in rows:
                 try:
                     ts = parse_datetime(row["timestamp"])
                     if ts.tzinfo is None:
@@ -2575,38 +2628,20 @@ class SMSAssistant:
                             body=row["message"],
                             timestamp=ts,
                             direction=row["direction"],
-                            label=row["label"]
+                            label=row["label"],
                         )
                     )
                 except Exception as e:
                     logger.debug("Failed to parse message: %s", e)
+
             if not messages:
-                print(f"No meeting messages{' for ' + date_filter if date_filter else ''}.")
-                try:
-                    self._manual_poll()
-                    cur = self.store.conn.execute(query, params)
-                    for row in cur.fetchall():
-                        ts = parse_datetime(row["timestamp"])
-                        if ts.tzinfo is None:
-                            ts = ts.replace(tzinfo=TZ)
-                        messages.append(
-                            Message(
-                                sender=row["sender"],
-                                body=row["message"],
-                                timestamp=ts,
-                                direction=row["direction"],
-                                label=row["label"]
-                            )
-                        )
-                except Exception:
-                    logger.exception("Manual poll failed")
-                    print(" Polling error.")
-            if not messages:
-                print(f"Still no meeting messages{' for ' + date_filter if date_filter else ''}.")
-            else:
-                print(f" Found {len(messages)} meeting messages{' for ' + date_filter if date_filter else ''}:")
-                for m in messages:
-                    print(f"[{m.timestamp}] {m.sender}: {m.body} ({m.label}, {m.direction})")
+                print(f"No meeting messages found{' for ' + date_filter if date_filter else ''} in local DB.")
+
+        if messages:
+            print(f"Found {len(messages)} meeting message(s){' for ' + date_filter if date_filter else ''}:")
+            for m in messages:
+                print(f"[{m.timestamp}] {m.sender}: {m.body} ({m.label}, {m.direction})")
+
 
     def _show_filtered(self, label: str, date_filter: Optional[str] = None):
         """Show messages filtered by label."""
