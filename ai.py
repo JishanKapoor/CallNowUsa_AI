@@ -2271,51 +2271,51 @@ class SMSAssistant:
                                  target_number, condition_id, e)
                 print(f" Failed to start forwarding: {str(e)}")
 
-        def stop_forwarding():
-            try:
-                callnow_client.sms_forward_stop(
-                    to_number=value_number,
-                    to_number2=target_number,
-                    from_=CALLNOWUSA_NUMBER
-                )
-                self.store.stop_condition(condition_id)
-                logger.info("Stopped forwarding from %s to %s for condition %d", value_number, target_number,
-                            condition_id)
-                print(f"Stopped forwarding from {value} to {target} at {end_dt.strftime('%H:%M')}")
-            except Exception as e:
-                logger.exception("Failed to stop forwarding from %s to %s for condition %d: %s", value_number,
-                                 target_number, condition_id, e)
-                print(f" Failed to stop forwarding: {str(e)}")
-            finally:
-                if condition_id in self._condition_timers:
-                    del self._condition_timers[condition_id]
+        # def stop_forwarding():
+        #     try:
+        #         callnow_client.sms_forward_stop(
+        #             to_number=value_number,
+        #             to_number2=target_number,
+        #             from_=CALLNOWUSA_NUMBER
+        #         )
+        #         self.store.stop_condition(condition_id)
+        #         logger.info("Stopped forwarding from %s to %s for condition %d", value_number, target_number,
+        #                     condition_id)
+        #         print(f"Stopped forwarding from {value} to {target} at {end_dt.strftime('%H:%M')}")
+        #     except Exception as e:
+        #         logger.exception("Failed to stop forwarding from %s to %s for condition %d: %s", value_number,
+        #                          target_number, condition_id, e)
+        #         print(f" Failed to stop forwarding: {str(e)}")
+        #     finally:
+        #         if condition_id in self._condition_timers:
+        #             del self._condition_timers[condition_id]
 
-        if start_delay > 0:
-            start_timer = threading.Timer(start_delay, start_forwarding)
-            start_timer.start()
-            self._condition_timers[condition_id].append(start_timer)
-            logger.info("Scheduled forwarding start for condition %d in %.2f seconds (at %s)", condition_id,
-                        start_delay, start_dt.strftime('%H:%M'))
-        else:
-            start_forwarding()
+        # if start_delay > 0:
+        #     start_timer = threading.Timer(start_delay, start_forwarding)
+        #     start_timer.start()
+        #     self._condition_timers[condition_id].append(start_timer)
+        #     logger.info("Scheduled forwarding start for condition %d in %.2f seconds (at %s)", condition_id,
+        #                 start_delay, start_dt.strftime('%H:%M'))
+        # else:
+        #     start_forwarding()
 
-        if end_dt:
-            end_delay = max(0, (end_dt - now).total_seconds())
-            if end_delay > start_delay:
-                end_timer = threading.Timer(end_delay, stop_forwarding)
-                end_timer.start()
-                self._condition_timers[condition_id].append(end_timer)
-                logger.info("Scheduled forwarding stop for condition %d in %.2f seconds (at %s)", condition_id,
-                            end_delay, end_dt.strftime('%H:%M'))
-            else:
-                logger.warning("End time %s is before or equal to start time %s for condition %d, skipping stop timer",
-                               end_dt.strftime('%H:%M'), start_dt.strftime('%H:%M'), condition_id)
-                print(
-                    f"⚠️ End time {end_dt.strftime('%H:%M')} is before or equal to start time {start_dt.strftime('%H:%M')}")
+        # if end_dt:
+        #     end_delay = max(0, (end_dt - now).total_seconds())
+        #     if end_delay > start_delay:
+        #         end_timer = threading.Timer(end_delay, stop_forwarding)
+        #         end_timer.start()
+        #         self._condition_timers[condition_id].append(end_timer)
+        #         logger.info("Scheduled forwarding stop for condition %d in %.2f seconds (at %s)", condition_id,
+        #                     end_delay, end_dt.strftime('%H:%M'))
+        #     else:
+        #         logger.warning("End time %s is before or equal to start time %s for condition %d, skipping stop timer",
+        #                        end_dt.strftime('%H:%M'), start_dt.strftime('%H:%M'), condition_id)
+        #         print(
+        #             f"⚠️ End time {end_dt.strftime('%H:%M')} is before or equal to start time {start_dt.strftime('%H:%M')}")
 
-        else:
-            print(
-                f"ℹ️ Forwarding from {value} to {target} will continue until stopped with 'stop condition {condition_id}'")
+        # else:
+        #     print(
+        #         f"ℹ️ Forwarding from {value} to {target} will continue until stopped with 'stop condition {condition_id}'")
 
     def _modify_condition(self, cmd: Dict[str, Any]):
         """Modify an existing conditional forwarding rule."""
