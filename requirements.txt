@@ -5,3 +5,4 @@ callnowusa
 flask
 gunicorn
 python-dotenv
+dataparser
