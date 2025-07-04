@@ -20,21 +20,21 @@ from openai import AzureOpenAI
 from callnowusa import Client
 from dotenv import load_dotenv
 load_dotenv()
-
+import dateparser
 # The rest of your imports and code
 import os
 # Environment variables and defaults
 account_sid = 'SID_d5cf1823-5664-42cc-b6b6-fb10bcdaec56'
 auth_token = 'AUTH_aaa784bc-a599-499f-946b-ba7115c59726'
 CALLNOWUSA_NUMBER = 'default'
+
 AZURE_API_KEY: str = os.getenv("AZURE_API_KEY")
 AZURE_ENDPOINT: str = os.getenv("AZURE_ENDPOINT")
-
 TIMEZONE: str = os.getenv("ASSISTANT_TZ", "US/Eastern")
 TZ = pytz.timezone(TIMEZONE)
 
 DB_PATH: Path = Path("contacts.db")
-POLL_INTERVAL_SEC: int = 30
+POLL_INTERVAL_SEC: int = 60
 LLM_MODEL: str = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
 # Supported labels for message classification
@@ -220,6 +220,28 @@ class SQLiteStore:
                 "INSERT OR REPLACE INTO contacts (alias, phone_number) VALUES (?, ?)",
                 (alias.lower(), number),
             )
+    def get_condition(self, condition_id: int):
+        """Fetch a condition row by ID from the conditions table."""
+        query = """
+            SELECT id, type, value, action, target, start_time, end_time, active
+            FROM conditions
+            WHERE id = ? AND active = 1
+        """
+        cursor = self.conn.execute(query, (condition_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        # Return dict for easy access
+        return {
+            "id": row[0],
+            "type": row[1],
+            "value": row[2],
+            "action": row[3],
+            "target": row[4],
+            "start_time": row[5],
+            "end_time": row[6],
+            "active": row[7],
+        }
 
     def delete_contact(self, alias: str) -> bool:
         """Delete a contact."""
@@ -2118,25 +2140,38 @@ class SMSAssistant:
             return
 
         now = datetime.now(TZ)
+
+        # Parse start_time
         try:
             if start_time == "now":
                 start_dt = now
             else:
-                start_dt = datetime.combine(now.date(), datetime.strptime(start_time, "%H:%M").time()).replace(
-                    tzinfo=TZ)
-                if start_dt < now:
-                    start_dt += timedelta(days=1)  # Assume next day if past
-            end_dt = None
-            store_end_time = None
-            if end_time and end_time != "None":
-                end_dt = datetime.combine(now.date(), datetime.strptime(end_time, "%H:%M").time()).replace(tzinfo=TZ)
-                if end_dt <= start_dt:
-                    end_dt += timedelta(days=1)  # Handle overnight
-                store_end_time = end_dt.strftime("%H:%M")
-        except ValueError as e:
-            logger.error("Failed to parse times start_time='%s', end_time='%s': %s", start_time, end_time, e)
-            print(f" Invalid time format: start_time={start_time}, end_time={end_time}")
+                naive_start = datetime.combine(now.date(), datetime.strptime(start_time, "%H:%M").time())
+                start_dt = TZ.localize(naive_start)
+                if (start_dt - now).total_seconds() < -5:
+                    start_dt += timedelta(days=1)
+        except Exception as e:
+            logger.error("Failed to parse start_time='%s': %s", start_time, e)
+            print(f" Invalid start time format: {start_time}")
             return
+
+        # Parse end_time using dateparser
+        end_dt = None
+        store_end_time = None
+        if not end_time or end_time.lower() in ["stopped", "until stopped", "none"]:
+            end_dt = start_dt + timedelta(hours=24)
+            store_end_time = end_dt.strftime("%H:%M")
+        else:
+            parsed_end = dateparser.parse(
+                end_time,
+                settings={"TIMEZONE": str(TZ), "RETURN_AS_TIMEZONE_AWARE": True, "PREFER_DATES_FROM": "future"}
+            )
+            if parsed_end is None:
+                print(f"❌ Invalid natural end time: '{end_time}'")
+                return
+
+            end_dt = parsed_end
+            store_end_time = end_dt.strftime("%H:%M")
 
         try:
             condition_id = self.store.add_condition(type_, value_number, condition_action, target_number,
@@ -2150,15 +2185,12 @@ class SMSAssistant:
             print(f" Failed to add condition: {str(e)}")
             return
 
-        # Initialize timer storage if not present
         if not hasattr(self, '_condition_timers'):
             self._condition_timers = {}
 
-        # Cancel any existing timers for this condition
         if condition_id in self._condition_timers:
             for timer in self._condition_timers[condition_id]:
                 timer.cancel()
-                logger.debug("Canceled existing timer for condition %d", condition_id)
             del self._condition_timers[condition_id]
 
         start_delay = max(0, (start_dt - now).total_seconds())
@@ -2198,35 +2230,93 @@ class SMSAssistant:
                 if condition_id in self._condition_timers:
                     del self._condition_timers[condition_id]
 
-        # Schedule start timer
         if start_delay > 0:
             start_timer = threading.Timer(start_delay, start_forwarding)
             start_timer.start()
             self._condition_timers[condition_id].append(start_timer)
-            logger.info("Scheduled forwarding start for condition %d in %d seconds", condition_id, start_delay)
+            logger.info("Scheduled forwarding start for condition %d in %.2f seconds (at %s)", condition_id,
+                        start_delay, start_dt.strftime('%H:%M'))
         else:
-            logger.debug("Starting forwarding immediately for condition %d", condition_id)
             start_forwarding()
 
-        # Schedule stop timer
-        if end_time and end_dt:
+        if end_dt:
             end_delay = max(0, (end_dt - now).total_seconds())
             if end_delay > start_delay:
                 end_timer = threading.Timer(end_delay, stop_forwarding)
                 end_timer.start()
                 self._condition_timers[condition_id].append(end_timer)
-                logger.info("Scheduled forwarding stop for condition %d in %d seconds", condition_id, end_delay)
+                logger.info("Scheduled forwarding stop for condition %d in %.2f seconds (at %s)", condition_id,
+                            end_delay, end_dt.strftime('%H:%M'))
             else:
                 logger.warning("End time %s is before or equal to start time %s for condition %d, skipping stop timer",
                                end_dt.strftime('%H:%M'), start_dt.strftime('%H:%M'), condition_id)
                 print(
-                    f" End time {end_dt.strftime('%H:%M')} is before or equal to start time {start_dt.strftime('%H:%M')}.")
-                return
+                    f"⚠️ End time {end_dt.strftime('%H:%M')} is before or equal to start time {start_dt.strftime('%H:%M')}")
         else:
-            logger.info("No end time specified for condition %d, forwarding will continue until manually stopped",
-                        condition_id)
             print(
                 f"ℹ️ Forwarding from {value} to {target} will continue until stopped with 'stop condition {condition_id}'")
+
+        def start_forwarding():
+            try:
+                callnow_client.sms_forward(
+                    to_number=value_number,
+                    to_number2=target_number,
+                    from_=CALLNOWUSA_NUMBER
+                )
+                logger.info("Started forwarding from %s to %s for condition %d", value_number, target_number,
+                            condition_id)
+                print(f" Started forwarding from {value} to {target} at {start_dt.strftime('%H:%M')}")
+            except Exception as e:
+                logger.exception("Failed to start forwarding from %s to %s for condition %d: %s", value_number,
+                                 target_number, condition_id, e)
+                print(f" Failed to start forwarding: {str(e)}")
+
+        def stop_forwarding():
+            try:
+                callnow_client.sms_forward_stop(
+                    to_number=value_number,
+                    to_number2=target_number,
+                    from_=CALLNOWUSA_NUMBER
+                )
+                self.store.stop_condition(condition_id)
+                logger.info("Stopped forwarding from %s to %s for condition %d", value_number, target_number,
+                            condition_id)
+                print(f"Stopped forwarding from {value} to {target} at {end_dt.strftime('%H:%M')}")
+            except Exception as e:
+                logger.exception("Failed to stop forwarding from %s to %s for condition %d: %s", value_number,
+                                 target_number, condition_id, e)
+                print(f" Failed to stop forwarding: {str(e)}")
+            finally:
+                if condition_id in self._condition_timers:
+                    del self._condition_timers[condition_id]
+
+        if start_delay > 0:
+            start_timer = threading.Timer(start_delay, start_forwarding)
+            start_timer.start()
+            self._condition_timers[condition_id].append(start_timer)
+            logger.info("Scheduled forwarding start for condition %d in %.2f seconds (at %s)", condition_id,
+                        start_delay, start_dt.strftime('%H:%M'))
+        else:
+            start_forwarding()
+
+        if end_dt:
+            end_delay = max(0, (end_dt - now).total_seconds())
+            if end_delay > start_delay:
+                end_timer = threading.Timer(end_delay, stop_forwarding)
+                end_timer.start()
+                self._condition_timers[condition_id].append(end_timer)
+                logger.info("Scheduled forwarding stop for condition %d in %.2f seconds (at %s)", condition_id,
+                            end_delay, end_dt.strftime('%H:%M'))
+            else:
+                logger.warning("End time %s is before or equal to start time %s for condition %d, skipping stop timer",
+                               end_dt.strftime('%H:%M'), start_dt.strftime('%H:%M'), condition_id)
+                print(
+                    f"⚠️ End time {end_dt.strftime('%H:%M')} is before or equal to start time {start_dt.strftime('%H:%M')}")
+
+        else:
+            print(
+                f"ℹ️ Forwarding from {value} to {target} will continue until stopped with 'stop condition {condition_id}'")
+
     def _modify_condition(self, cmd: Dict[str, Any]):
         """Modify an existing conditional forwarding rule."""
         condition_id = cmd.get("id")
@@ -2336,16 +2426,41 @@ class SMSAssistant:
         for cond in active_conditions:
             time_str = f" from {cond.start_time} until stopped" if not cond.end_time else f" from {cond.start_time} to {cond.end_time}"
             print(f" - {cond.id_}: {cond.type_}={cond.value}, {cond.action} to {cond.target}{time_str}")
+
     def _stop_condition(self, cmd: Dict[str, Any]):
-        """Stop a conditional forwarding rule."""
         condition_id = cmd.get("id")
         if not condition_id:
             print(" Missing condition ID. Try 'list conditions' to see active conditions.")
             return
-        if self.store.stop_condition(condition_id):
+
+        if hasattr(self, '_condition_timers') and condition_id in self._condition_timers:
+            for timer in self._condition_timers[condition_id]:
+                timer.cancel()
+            del self._condition_timers[condition_id]
+
+        condition = self.store.get_condition(condition_id)
+        if not condition:
+            print(f" Condition {condition_id} not found or already inactive.")
+            return
+
+        # Normalize phone numbers or resolve aliases
+        value_number = normalize_phone_number(condition['value']) if is_valid_number(
+            condition['value']) else self.store.resolve(condition['value'])
+        target_number = normalize_phone_number(condition['target']) if is_valid_number(
+            condition['target']) else self.store.resolve(condition['target'])
+
+        try:
+            callnow_client.sms_forward_stop(
+                to_number=value_number,
+                to_number2=target_number,
+                from_=CALLNOWUSA_NUMBER
+            )
+            self.store.stop_condition(condition_id)
             print(f" Stopped condition {condition_id}")
-        else:
-            print(f" Condition {condition_id} not found or not active.")
+        except Exception as e:
+            print(f" Failed to stop condition {condition_id}: {e}")
+
+
 
     def _cancel_all_scheduled_sms(self):
         """Cancel all scheduled SMS."""
