@@ -2644,74 +2644,69 @@ class SMSAssistant:
 
 
     def _show_filtered(self, label: str, date_filter: Optional[str] = None):
-        """Show messages filtered by label."""
-        print(f"Searching for '{label}' messages{' ' + date_filter if date_filter else ''}...")
+        """Use GPT-4o to filter messages by label and optional date."""
+        print(f"Searching for '{label}' messages{' ' + date_filter if date_filter else ''} using GPT-4o only...")
+
+        today = datetime.now(TZ).date()
+
+        # Pull recent messages (last 7 days) for GPT context
         with self.store._lock, self.store.conn:
-            query = "SELECT sender, message, timestamp, direction, label FROM message_log WHERE label = ?"
-            params = [label]
-            if date_filter:
-                today = datetime.now(TZ).date()
-                if date_filter == "today":
-                    query += " AND date(timestamp) = ?"
-                    params.append(today.strftime("%Y-%m-%d"))
-                elif date_filter == "tomorrow":
-                    tomorrow = today + timedelta(days=1)
-                    query += " AND date(timestamp) = ?"
-                    params.append(tomorrow.strftime("%Y-%m-%d"))
-                elif date_filter == "next week":
-                    next_monday = today + timedelta(days=(7 - today.weekday()))
-                    next_sunday = next_monday + timedelta(days=6)
-                    query += " AND date(timestamp) BETWEEN ? AND ?"
-                    params.extend([next_monday.strftime("%Y-%m-%d"), next_sunday.strftime("%Y-%m-%d")])
-                elif date_filter == "upcoming":
-                    query += " AND date(timestamp) > ?"
-                    params.append(today.strftime("%Y-%m-%d"))
-            query += " ORDER BY timestamp DESC"
-            cur = self.store.conn.execute(query, params)
-            messages = []
-            for row in cur.fetchall():
-                try:
-                    ts = parse_datetime(row["timestamp"])
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=TZ)
-                    messages.append(
-                        Message(
-                            sender=row["sender"],
-                            body=row["message"],
-                            timestamp=ts,
-                            direction=row["direction"],
-                            label=row["label"]
-                        )
-                    )
-                except Exception as e:
-                    logger.debug("Failed to parse message: %s", e)
-            if not messages:
-                print(f"No '{label}' messages{' for ' + date_filter if date_filter else ''}.")
-                try:
-                    self._manual_poll()
-                    cur = self.store.conn.execute(query, params)
-                    for row in cur.fetchall():
-                        ts = parse_datetime(row["timestamp"])
-                        if ts.tzinfo is None:
-                            ts = ts.replace(tzinfo=TZ)
-                        messages.append(
-                            Message(
-                                sender=row["sender"],
-                                body=row["message"],
-                                timestamp=ts,
-                                direction=row["direction"],
-                                label=row["label"]
-                            )
-                        )
-                except Exception:
-                    logger.exception("Manual poll failed")
-                    print(" Polling error.")
-            if not messages:
-                print(f"Still no '{label}' messages{' for ' + date_filter if date_filter else ''}")
-            else:
-                print(f" Found {len(messages)} messages tagged as '{label}'{' for ' + date_filter if date_filter else ''}:")
-                for m in messages:
-                    print(f"[{m.timestamp}] {m.sender}: {m.body} ({m.label}, {m.direction})")
+            cur = self.store.conn.execute(
+                "SELECT sender, message, timestamp, direction, label FROM message_log WHERE date(timestamp) >= ? ORDER BY timestamp DESC",
+                [(today - timedelta(days=7)).strftime("%Y-%m-%d")]
+            )
+            raw_msgs = [
+                f"[{row['timestamp']}] {row['sender']} ({row['direction']}): {row['message']}"
+                for row in cur.fetchall()
+            ]
+
+        if not raw_msgs:
+            print("No recent messages found to analyze.")
+            return
+
+        context = "\n".join(raw_msgs)
+
+        # Compose GPT prompt
+        prompt = f"""
+    You are an assistant that reads text messages and identifies which ones are romantic in nature.
+
+    Romantic messages often contain:
+    - Affectionate language (e.g. "miss you", "love you", "thinking of you")
+    - Emotions or emotional cues
+    - Emojis like ❤️ 💕 💖 😘 💭
+    - References to love, longing, missing, excitement, etc.
+
+    Examples:
+    - "Can't wait to see you ❤️"
+    - "Thinking about you 💭"
+    - "Missed your smile 💕"
+
+    Below are recent SMS messages. Return only the romantic ones, one per line, in this format:
+    [timestamp] sender (direction): message
+
+    Messages:
+    {context}
+
+    If none are romantic, reply exactly: No romantic messages found.
+        """
+
+        try:
+            response = openai_client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=1000,
+            )
+            print("Sending the following prompt to GPT:\n", prompt)
+
+            reply = response.choices[0].message.content.strip()
+            print("GPT-4o says:\n" + reply)
+
+        except Exception as e:
+            print(f"Failed to get response from GPT-4o: {e}")
 
     def _contact_exists(self, alias: str):
         """Check if a contact exists."""
